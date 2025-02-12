@@ -1,157 +1,151 @@
-# Camellos\_TCP
+# Guía de Modificación: Control de Turnos y Tirada de Dado en la Carrera de Camellos
 
-Este proyecto implementa una simulación de una carrera de camellos utilizando un modelo cliente-servidor basado en el protocolo TCP. Está diseñado como una guía práctica para entender la comunicación entre múltiples clientes y un servidor, así como el manejo de interfaces gráficas en Java.
+## Introducción
+
+En este proyecto original, la carrera de camellos se ejecuta de forma automática, es decir, cada hilo (representando a un camello) avanza en cada iteración sin la intervención del usuario.  
+La **modificación** que vamos a implementar consiste en que:
+- **Cada camello avance solo cuando el jugador (cliente) realice una tirada de dado.**
+- **Se controle el turno** para que únicamente el jugador que le corresponde lance el dado, mientras que los demás esperen.
+
+Esta guía explica, de manera paso a paso y a nivel conceptual, cómo lograr esta modificación y qué partes del código se deben cambiar.
 
 ---
 
-## 1. Estructura del proyecto
+## Paso 1: Controlar el Turno en el Servidor
 
-La estructura del proyecto está organizada en paquetes para facilitar la comprensión y el mantenimiento del código:
+### 1.1. Agregar una variable para el turno
 
+- **Objetivo:** Permitir que el servidor sepa qué camello (jugador) tiene el turno para lanzar el dado.
+- **Dónde cambiar:**  
+  En la clase `Servidor.java`, declara una variable `turnoActual` (tipo `int`) que indique el identificador (id) del camello que tiene el turno.
+
+```java
+// Declaración en la clase Servidor
+private int turnoActual = 0; // El primer turno se asigna al camello 0
+
+1.2. Crear métodos sincronizados para consultar y actualizar el turno
+Objetivo: Asegurar que la consulta y actualización del turno sean seguras en un entorno multihilo.
+
+Dónde cambiar:
+En Servidor.java, añade métodos como:
+
+public synchronized int getTurnoActual() {
+    return turnoActual;
+}
+
+public synchronized void siguienteTurno() {
+    // Avanza al siguiente camello; si el siguiente ya ha terminado, continúa buscando
+    do {
+        turnoActual = (turnoActual + 1) % NUM_MAX_JINETES;
+    } while (avances[turnoActual] >= 100 && !finCarrera);
+    // Notifica a todos los hilos que se ha cambiado el turno
+    notifyAll();
+}
 ```
-Camellos_TCP
-|
-|-- src
-    |-- es.juangmedac.dam
-        |-- cliente
-        |   |-- Cliente.java
-        |   |-- ClienteMain.java
-        |
-        |-- gui
-        |   |-- ClienteVentanaCarrera.java
-        |   |-- ClienteVentanaPodio.java
-        |
-        |-- server
-            |-- Servidor.java
-            |-- ServidorMain.java
-            |-- GestionClientes.java
-```
-
-### Descripción de los paquetes y clases:
-
-#### **cliente**
-
-- `Cliente.java`: Define la lógica de un cliente en la simulación.
-- `ClienteMain.java`: Inicia múltiples instancias de clientes simulando varios jugadores.
-
-#### **gui**
-
-- `ClienteVentanaCarrera.java`: Muestra el progreso de la carrera para un jugador.
-- `ClienteVentanaPodio.java`: Muestra los resultados finales de la carrera (podio).
-
-#### **server**
-
-- `Servidor.java`: Gestiona la lógica principal del servidor y controla la carrera.
-- `ServidorMain.java`: Inicia la ejecución del servidor.
-- `GestionClientes.java`: Maneja la comunicación con cada cliente conectado al servidor.
-
 ---
+1.3. Actualizar el avance según la tirada
+Objetivo: Usar el valor del dado para actualizar el avance del camello correspondiente.
 
-## 2. Lógica del proyecto
+Dónde cambiar:
+En el método realizarAvance(int idCamello, int avance) de Servidor.java, el valor del dado (entre 1 y 6) se utiliza para actualizar el avance del camello. Se deben conservar las comprobaciones para que el avance no supere 100 y asignar la posición final cuando corresponda.
 
-### **Servidor**
+Paso 2: Modificar el Hilo de Gestión de Clientes (GestionClientes.java)
+2.1. Esperar hasta que sea el turno del camello
+Objetivo: Cada hilo debe verificar que es su turno antes de proceder a lanzar el dado.
 
-1. **Inicia el servidor**:
-   - Escucha en un puerto específico (por defecto, `5555`).
-   - Acepta conexiones de hasta 4 clientes.
-2. **Gestión de clientes**:
-   - Cada cliente se gestiona en un hilo separado mediante la clase `GestionClientes`.
-   - Se envían datos de avance de los camellos y las posiciones finales a los clientes.
-3. **Simulación de la carrera**:
-   - Cada camello avanza en base a tiradas aleatorias simuladas en el servidor.
-   - Cuando todos los camellos terminan, se calculan las posiciones finales.
+Dónde cambiar:
+En el método run() de GestionClientes.java, antes de realizar cualquier acción, se utiliza un bloque synchronized(servidor) y se espera (wait()) hasta que servidor.getTurnoActual() == idCamello.
 
-### **Cliente**
+synchronized (servidor) {
+    while (servidor.getTurnoActual() != idCamello && !servidor.isFinCarrera()) {
+        servidor.wait();
+    }
+}
 
-1. **Se conecta al servidor**:
-   - Envía el nombre del jugador al servidor para registrarse.
-   - Recibe confirmación de aceptación del servidor.
-2. **Visualiza la carrera**:
-   - La clase `ClienteVentanaCarrera` muestra el avance de cada camello en tiempo real mediante barras de progreso.
-3. **Visualiza el podio**:
-   - Una vez terminada la carrera, el cliente muestra los resultados finales usando la clase `ClienteVentanaPodio`.
+2.2. Notificar al cliente que es su turno
+Objetivo: Informar al cliente (jugador) que le corresponde lanzar el dado.
 
----
+Dónde cambiar:
+Una vez que el hilo determina que es su turno, se envía un código especial (por ejemplo, -2) al cliente para que active la funcionalidad de "Lanzar Dado".
 
-## 3. Detalles de implementación
+// Notificar con el código -2 que es el turno del jugador
+out.writeInt(-2);
+out.flush();
 
-### **Clases principales**
+2.3. Esperar la tirada y actualizar el avance
+Objetivo: Recibir el valor del dado del cliente y actualizar el avance del camello.
 
-#### **Servidor.java**
+Dónde cambiar:
+Tras enviar el código, el hilo espera la respuesta del cliente (el valor del dado) y lo utiliza para actualizar el avance mediante servidor.realizarAvance(idCamello, dado). Posteriormente, se envían las actualizaciones a ese cliente y se cambia el turno usando servidor.siguienteTurno().
 
-- **Métodos importantes**:
-  - `ejecutarServidor()`: Inicia el servidor y maneja la lógica de conexión de clientes y carrera.
-  - `realizarAvance(int posicion, int avance)`: Actualiza el progreso de un camello.
-  - `getAvances()`: Devuelve los avances actuales de los camellos.
-  - `getPosicionesFinales(int idCamello)`: Calcula y devuelve las posiciones finales de los camellos.
+Paso 3: Modificar el Cliente (Cliente.java)
+3.1. Interpretar el mensaje de turno
+Objetivo: Detectar el código especial enviado por el servidor que indica "¡Es tu turno, lanza el dado!" (por ejemplo, -2).
 
-#### **GestionClientes.java**
+Dónde cambiar:
+En el bucle de comunicación de Cliente.java, al leer el primer entero se debe comprobar si es -2.
 
-- **Responsabilidad**:
-  - Maneja la interacción entre el servidor y un cliente específico.
-  - Envia los avances de la carrera y las posiciones finales al cliente.
-- **Método destacado**:
-  - `run()`: Ejecuta la comunicación en un hilo separado.
+int codigo = in.readInt();
+if (codigo == -2) {
+    // Es el turno del jugador: se debe activar la funcionalidad de lanzar el dado
+    // ...
+}
 
-#### **Cliente.java**
+3.2. Implementar la tirada del dado mediante la interfaz gráfica
+Objetivo: Permitir que el jugador interactúe con la GUI para lanzar el dado.
 
-- **Responsabilidad**:
-  - Se conecta al servidor.
-  - Recibe datos de la carrera y los muestra en las interfaces gráficas.
-- **Métodos importantes**:
-  - `run()`: Ejecuta la lógica principal del cliente.
+Dónde cambiar:
+En la clase ClienteVentanaCarrera.java, se debe agregar un botón "Lanzar Dado" (deshabilitado por defecto) que se active cuando se reciba el código -2. Además, se implementa un método bloqueante (por ejemplo, esperarTirada()) que espera hasta que el usuario pulse el botón y retorne el valor del dado (un número entre 1 y 6).
 
-#### **ClienteVentanaCarrera.java**
+// Ejemplo de método en ClienteVentanaCarrera.java:
+public int esperarTirada() {
+    activarTirada(); // Habilita el botón "Lanzar Dado"
+    synchronized(this) {
+        while (!dadoLanzado) {
+            try {
+                wait();
+            } catch (InterruptedException ex) {
+                ex.printStackTrace();
+            }
+        }
+        dadoLanzado = false;
+        return resultadoDado; // Valor generado al pulsar el botón
+    }
+}
 
-- **Función**:
-  - Muestra el avance de los camellos en barras de progreso.
-- **Métodos clave**:
-  - `setNombresJinetes(String nombres)`: Configura los nombres de los camellos.
-  - `avance(int[] avances)`: Actualiza las barras de progreso con los avances actuales.
+3.3. Enviar el valor del dado al servidor
+Objetivo: Una vez que el jugador realiza la tirada, el valor se envía al servidor para actualizar el avance.
 
-#### **ClienteVentanaPodio.java**
+Dónde cambiar:
+En el bucle de Cliente.java, cuando se reciba el código -2 se llama a esperarTirada() y, una vez obtenido el resultado, se envía al servidor:
 
-- **Función**:
-  - Muestra el podio final con las posiciones de los camellos.
-- **Método clave**:
-  - `ClienteVentanaPodio(int[] posiciones, String[] nombres)`: Configura y muestra las posiciones finales.
+int dado = ventana.esperarTirada();
+out.writeInt(dado);
+out.flush();
 
----
+Paso 4: Modificar la Interfaz Gráfica (ClienteVentanaCarrera.java)
+4.1. Agregar y controlar el botón "Lanzar Dado"
+Objetivo: Permitir al jugador lanzar el dado únicamente cuando es su turno.
 
-## 4. Ejecución del proyecto
+Dónde cambiar:
 
-### **Requisitos previos**
+Añade un botón "Lanzar Dado" a la interfaz.
 
-- JDK 16 o superior.
-- IntelliJ IDEA (opcional, para facilitar el desarrollo).
+El botón debe estar deshabilitado por defecto y habilitarse cuando se reciba el mensaje de turno.
 
-### **Pasos para ejecutar**
+Al pulsar el botón, se genera el número aleatorio (entre 1 y 6) y se notifica al hilo bloqueado mediante notifyAll().
 
-1. **Iniciar el servidor**:
+4.2. Indicadores visuales
+Objetivo: Mejorar la experiencia del usuario, por ejemplo, cambiando el color del texto del nombre del jugador para indicar que es su turno.
 
-   - Ejecuta `ServidorMain.java`.
-   - El servidor comenzará a escuchar en el puerto `5555`.
+Conclusión
+Siguiendo estos pasos, el juego se modificará de tal forma que:
 
-2. **Iniciar los clientes**:
+El avance de cada camello depende de la acción del jugador (tirada del dado), en lugar de avanzar automáticamente.
 
-   - Ejecuta `ClienteMain.java`.
-   - Esto iniciará 4 instancias de clientes.
+Solo el jugador cuyo turno corresponda puede lanzar el dado, mientras que los demás quedan esperando.
 
-3. **Simulación de la carrera**:
+Se utiliza la sincronización con wait() y notifyAll() para coordinar la comunicación y el control de turnos entre el servidor y los clientes.
 
-   - Observa cómo los camellos avanzan en las ventanas de los clientes.
-   - Una vez finalizada la carrera, se mostrará el podio con los resultados.
-
----
-
-## 5. Notas para los alumnos
-
-- **Modularidad:** Observa cómo se organiza el proyecto en paquetes y clases, cada uno con responsabilidades claras.
-- **Hilos:** Analiza cómo se gestionan los hilos tanto en el cliente como en el servidor.
-- **Interfaces gráficas:** Aprende cómo se integran las interfaces gráficas con la lógica del cliente.
-- **Protocolo TCP:** Comprende cómo se utiliza este protocolo para la comunicación cliente-servidor.
-
----
-
-¡Diviértete explorando y entendiendo este proyecto de cliente-servidor! 😊
+Esta guía paso a paso debe ayudar a comprender conceptualmente qué partes del código se deben cambiar y cómo implementar la nueva funcionalidad. ¡Anímense a probar y experimentar!
 
