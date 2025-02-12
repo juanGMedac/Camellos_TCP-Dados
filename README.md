@@ -1,6 +1,9 @@
 
 # Modificación: Control de Turnos y Tirada de Dado en la Carrera de Camellos 🐪
 
+## MarkMap
+https://drive.google.com/file/d/1b757Iz1vlrNAIx3ofVuBlaUOPRKzHSh7/view?usp=sharing
+
 ## Descripción General
 
 Este proyecto implementa una modificación al juego original de la Carrera de Camellos, transformándolo de un sistema automático a uno basado en turnos. La modificación principal introduce dos cambios fundamentales:
